@@ -1,0 +1,242 @@
+library(tidyverse)
+library(RPostgres)
+
+con <- dbConnect(RPostgres::Postgres(),
+                 dbname = 'TemaBaze',
+                 host = 'localhost',
+                 port = 5432,
+                 user = 'postgres',
+                 password = 'postgres')
+
+tables <- dbGetQuery(con, 
+"SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
+
+tables
+
+for(i in 1:nrow(tables)){
+  temp <- dbGetQuery(con, paste("select * from ", tables[i,1], sep=""))
+  assign(tables[i,1], temp)
+}
+
+rm(con,temp,i,tables)
+
+
+
+# Turism2.1 În ce luni calendaristice există sejururi pentru anul 2024
+turism_2_1 <- sejururi %>%
+  filter(lubridate::year(datasosire) == 2024) %>%
+  mutate(luna = lubridate::month(datasosire, label = TRUE, abbr = FALSE)) %>%
+  select(luna) %>%
+  distinct(luna)
+
+# Turism2.2 Afișați rezervările pentru sejururile din luna august 2024
+turism_2_2 <- rezervari %>%
+  inner_join(rezervari_sejururi, by = "idrezervare") %>%
+  inner_join(sejururi, by = "idsejur") %>%
+  filter(datasosire >= as.Date("2024-08-01") & datasosire <= as.Date("2024-08-31")) %>%
+  select(idrezervare, datasosire)
+
+
+# Turism2.3 Extrageți toți partenerii din Italia.
+turism_2_3 <- parteneri %>%
+  inner_join(localitati, by = c("id_loc_partener" = "idlocalitate")) %>%
+  inner_join(tari, by = "idtara") %>%
+  filter(numetara == "Italia") %>%
+  select(numepartener, numetara)
+
+
+
+
+# Turism2.4 Care dintre persoanele angajate nu sunt și clienți
+turism_2_4 <- persoane %>%
+  inner_join(angajati, by = c("idpersoana" = "idangajat")) %>%
+  anti_join(
+    persoane %>% inner_join(rezervari, by = c("idpersoana" = "codclient")), 
+    by = "idpersoana"
+  ) %>%
+  select(numepersoana, prenumepersoana)
+
+
+
+# Tema 2 - Turism 2
+# Turism2.5 În câte luni calendaristice există sejururi pentru anul 2024
+turism_2_5 <- sejururi %>%
+  filter(year(datasosire) == 2024) %>%
+  summarise(numar_luni = n_distinct(month(datasosire)))
+
+
+# Turism2.6 Afișați numărul de sejururi ale clienților români în luna august 2024, 
+# pentru fiecare localitate (a clienților) din România 
+turism_2_6 <- sejururi %>%
+  inner_join(rezervari_sejururi, by = "idsejur") %>%
+  inner_join(rezervari, by = "idrezervare") %>%
+  inner_join(persoane, by = c("codclient" = "idpersoana")) %>%
+  inner_join(localitati, by = c("idlocalitatepersoana" = "idlocalitate")) %>%
+  inner_join(tari, by = "idtara") %>%
+  filter(
+    numetara == "Romania",
+    year(datasosire) == 2024,
+    month(datasosire) == 8) %>%
+  group_by(numelocalitate) %>%
+  summarise(nr_sejururi = n())
+
+# Turism2.7 Pentru fiecare angajat, afișați, pe coloane separate, 
+# încăsările (rezervărilor pentru care au fost persoane de contact) 
+# pentru anii 2018, 2019 și 2020. 
+turism_2_7 <- persoane %>%
+  inner_join(angajati, by = c("idpersoana" = "idangajat")) %>%
+  inner_join(rezervari, by = c("idpersoana" = "idpersoanacontact")) %>%
+  inner_join(incasari_rezervari, by = "idrezervare") %>%
+  inner_join(incasari, by = "idincasare") %>%
+  group_by(numepersoana, prenumepersoana) %>%
+  summarise(
+    incasari2018 = sum(if_else(year(dataoraincasari) == 2018, transa_rezervare, 0)),
+    incasari2019 = sum(if_else(year(dataoraincasari) == 2019, transa_rezervare, 0)),
+    incasari2020 = sum(if_else(year(dataoraincasari) == 2020, transa_rezervare, 0))
+  )
+
+
+# Turism2.8 Care sunt angajații noștri care nu au acordat clienților lor 
+# niciun discount (până în prezent)? 
+turism_2_8_corect <- angajati %>%
+  inner_join(persoane, by = c("idangajat" = "idpersoana")) %>%
+  filter(!(idangajat %in% (
+    rezervari %>% 
+      filter(discount > 0) %>% 
+      pull(idpersoanacontact)
+  ))) %>%
+  distinct(numepersoana, prenumepersoana)
+
+  
+# Turism2.9 Afișați, pentru anul 2023, încasările pentru fiecare client, 
+# cu subtotal la nivel de lună și un total general  
+turism_2_9 <- persoane %>%
+  inner_join(rezervari, by = c("idpersoana" = "codclient")) %>%
+  inner_join(incasari_rezervari, by = "idrezervare") %>%
+  inner_join(incasari, by = "idincasare") %>%
+  filter(year(dataoraincasari) == 2023) %>%
+  group_by(numepersoana, prenumepersoana, 
+           luna = as.character(month(dataoraincasari, label = TRUE, abbr = FALSE))) %>%
+  summarise(incasari = sum(transa_rezervare, na.rm = TRUE), .groups = "drop") %>%
+  bind_rows(
+    summarise(., 
+              numepersoana = "~TOTAL", 
+              prenumepersoana = "GENERAL~~", 
+              luna = "~~", 
+              incasari = sum(incasari))
+  )
+  
+# Turism2.10 Extrageți rezervările pentru care, simultan (pe aceeași rezervare) 
+# au fost contractate și sejururi, și circuite 
+# (soluția nu va folosi nici auto-joncțiuni, și nici INTERSECT!) 
+turism_2_10 <- rezervari_sejururi %>%
+  inner_join(rezervari, by = "idrezervare") %>%
+  inner_join(rezervari_circuite, by = "idrezervare")
+
+
+# Turism2.11 Afișați primele trei transporturi din fiecare circuit turistic 
+turism_2_11 <- transporturi %>%
+  inner_join(transporturi_circuite, by = "idtransport") %>%
+  inner_join(circuite_turistice, by = "idcircuitturistic") %>%
+  group_by(idcircuitturistic) %>%
+
+  arrange(data_ora_inceput, .by_group = TRUE) %>%
+  filter(row_number() <= 3) %>%
+  select(nume_circuit_turistic, tiptransport, data_ora_inceput) %>%
+  ungroup()
+  
+  
+# Turism2.12 Care sunt circuitele cu mai multe obiective decât circuitul cu numele X? 
+  
+turism_2_12 <- circuite_turistice %>%
+  inner_join(obiective_turistice_circuite, by = "idcircuitturistic") %>%
+  group_by(nume_circuit_turistic) %>%
+  summarise(numar_obiective = n(), .groups = "drop") %>%
+  filter(numar_obiective > numar_obiective[nume_circuit_turistic == "Circuitul X"]) %>%
+  arrange(desc(numar_obiective))
+
+
+
+# Turism2.13 Care sunt clienții care s-au cazat în (cel puțin) 
+# toate hotelurile în care s-a cazat clientul Ionescu? 
+
+turism_2_13 <- persoane %>%
+  filter(numepersoana != "Ionescu") %>%
+  inner_join(rezervari, by = c("idpersoana" = "codclient")) %>%
+  inner_join(rezervari_sejururi, by = "idrezervare") %>%
+  inner_join(sejururi, by = "idsejur") %>%
+  inner_join(camere_hotel, by = "idcamera") %>%
+  group_by(idpersoana, numepersoana, prenumepersoana) %>%
+
+  summarise(
+    hoteluri_intersectie = n_distinct(idhotel[idhotel %in% (
+      persoane %>%
+        inner_join(rezervari, by = c("idpersoana" = "codclient")) %>%
+        inner_join(rezervari_sejururi, by = "idrezervare") %>%
+        inner_join(sejururi, by = "idsejur") %>%
+        inner_join(camere_hotel, by = "idcamera") %>%
+        filter(numepersoana == "Ionescu") %>%
+        distinct(idhotel) %>%
+        pull(idhotel)
+    )]),
+    total_hoteluri_ionescu = n_distinct(
+      persoane %>%
+        inner_join(rezervari, by = c("idpersoana" = "codclient")) %>%
+        inner_join(rezervari_sejururi, by = "idrezervare") %>%
+        inner_join(sejururi, by = "idsejur") %>%
+        inner_join(camere_hotel, by = "idcamera") %>%
+        filter(numepersoana == "Ionescu") %>%
+        pull(idhotel)
+    ),
+    .groups = "drop"
+  ) %>%
+  filter(hoteluri_intersectie == total_hoteluri_ionescu) %>%
+  select(idpersoana, numepersoana, prenumepersoana)
+
+
+# Turism2.14 Calculați ponderea clienților din România 
+# în totalul încasărilor hotelurilor din Italia în 2023.
+
+turism_2_14 <- incasari %>%
+  inner_join(incasari_rezervari, by = "idincasare") %>%
+  inner_join(rezervari, by = "idrezervare") %>%
+  inner_join(persoane, by = c("codclient" = "idpersoana")) %>%
+  inner_join(localitati, by = c("idlocalitatepersoana" = "idlocalitate")) %>% # Localitate persoana
+  inner_join(tari, by = "idtara") %>% # Tara persoana
+  inner_join(rezervari_sejururi, by = "idrezervare") %>%
+  inner_join(sejururi, by = "idsejur") %>%
+  inner_join(camere_hotel, by = "idcamera") %>%
+  inner_join(hoteluri, by = "idhotel") %>%
+  inner_join(localitati, by = c("idlocalitate" = "idlocalitate"), suffix = c("_p", "_h")) %>% # Localitate hotel
+  inner_join(tari, by = c("idtara_h" = "idtara"), suffix = c("_p", "_h")) %>% # Tara hotel
+  
+  filter(
+    numetara_h == "Italia",
+    year(dataoraincasari) == 2023
+  ) %>%
+  
+  summarise(
+    ponderea = (sum(transa_rezervare[numetara_p == "Romania"], na.rm = TRUE) / 
+                  sum(transa_rezervare, na.rm = TRUE)) * 100
+  ) 
+
+
+# Turism2.15 Pe ce poziție se găsește hotelul X în 
+# topul hotelurilor din Grecia, după numărul de sejururi?
+
+turism_2_15 <- sejururi %>%
+  inner_join(camere_hotel, by = "idcamera") %>%
+  inner_join(hoteluri, by = "idhotel") %>%
+  inner_join(localitati, by = "idlocalitate") %>%
+  inner_join(tari, by = "idtara") %>%
+  filter(numetara == "Grecia") %>%
+  
+  group_by(numehotel) %>%
+  summarise(nr_sejururi = n(), .groups = "drop") %>%
+  mutate(pozitie = min_rank(-nr_sejururi)) %>%
+  filter(numehotel == "Hotel X") %>%
+  
+  select(numehotel, nr_sejururi, pozitie)
+
+
+
